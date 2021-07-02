@@ -614,6 +614,7 @@ name = "bevy_tests"
 version = "0.1.0"
 dependencies = [
  "bevy",
+ "bevy_render",
  "rand 0.8.4",
  "rand_distr",
  "rand_pcg",
