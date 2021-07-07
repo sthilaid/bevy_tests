@@ -130,19 +130,36 @@ fn spawn_galaxy(
 }
 
 struct GameCameraData {
-    angle: f32,
+    pitch: f32,
+    yaw: f32,
 }
 
 impl GameCameraData {
     fn new() -> GameCameraData {
-        GameCameraData { angle: FRAC_PI_2 }
+        GameCameraData {
+            pitch: 0.0,
+            yaw: 0.0,
+        }
     }
 }
+
+struct GalaxyMapCameraData {
+    angle: f32,
+}
+
+impl GalaxyMapCameraData {
+    fn new() -> GalaxyMapCameraData {
+        GalaxyMapCameraData { angle: FRAC_PI_2 }
+    }
+}
+
+struct CameraDebugText;
 
 fn setup_scene(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    asset_server: Res<AssetServer>,
 ) {
     spawn_galaxy(
         &mut commands,
@@ -150,44 +167,121 @@ fn setup_scene(
         &mut materials,
         12345678, // seed: u64,
         3,        // branch_count: u32,
-        200,      // elem_count: u32,
+        500,      // elem_count: u32,
         0.1,      // init_radius: f32,
-        0.5,      // expansion_rate: f32,
-        3.5,      // revolution_count: f32,
-        0.05,     // depth_std_dev: f32,
-        0.03,     // lat_offset_std_dev: f32,
+        1.0,      // expansion_rate: f32,
+        2.5,      // revolution_count: f32,
+        0.07,     // depth_std_dev: f32,
+        0.05,     // lat_offset_std_dev: f32,
     );
 
-    let mut camera = OrthographicCameraBundle::new_3d();
-    camera.orthographic_projection.scale = 3.0;
-    commands.spawn_bundle(camera).insert(GameCameraData::new());
+    let mut map_camera = OrthographicCameraBundle::new_3d();
+    map_camera.orthographic_projection.scale = 3.0;
+    commands
+        .spawn_bundle(map_camera)
+        .insert(GalaxyMapCameraData::new());
+
+    // commands
+    //     .spawn_bundle(PerspectiveCameraBundle::new_3d())
+    //     .insert(GameCameraData::new());
+
+    commands.spawn_bundle(UiCameraBundle::default());
+    commands
+        .spawn_bundle(TextBundle {
+            style: Style {
+                align_self: AlignSelf::FlexEnd,
+                position_type: PositionType::Absolute,
+                position: Rect {
+                    bottom: Val::Px(5.0),
+                    right: Val::Px(15.0),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            // Use the `Text::with_section` constructor
+            text: Text::with_section(
+                // Accepts a `String` or any type that converts into a `String`, such as `&str`
+                "Camera Data",
+                TextStyle {
+                    font: asset_server.load("fonts/regular.ttf"),
+                    font_size: 20.0,
+                    color: Color::WHITE,
+                },
+                // Note: You can use `Default::default()` in place of the `TextAlignment`
+                TextAlignment {
+                    horizontal: HorizontalAlign::Center,
+                    ..Default::default()
+                },
+            ),
+            ..Default::default()
+        })
+        .insert(CameraDebugText);
 }
 
-fn update_scene(
+fn update_map_camera(
+    time: Res<Time>,
+    input_data: Res<InputData>,
+    mut query: Query<(&mut GalaxyMapCameraData, &mut Transform)>,
+) {
+    if input_data.use_map_input() {
+        for (mut cam_data, mut cam_transform) in query.iter_mut() {
+            const AMPLITUDE: f32 = 5.0;
+            const FREQ: f32 = 0.5;
+            // let x = f32::cos(FREQ * time.seconds_since_startup() as f32 + PI * 0.5) * AMPLITUDE;
+            // let z = f32::sin(FREQ * time.seconds_since_startup() as f32 + PI * 0.5) * AMPLITUDE;
+            let mut delta_angle = 0.0;
+            if input_data.left {
+                delta_angle = -FREQ * time.delta().as_secs_f32();
+            } else if input_data.right {
+                delta_angle = FREQ * time.delta().as_secs_f32();
+            }
+            cam_data.angle += delta_angle;
+            let x = f32::cos(cam_data.angle) * AMPLITUDE;
+            let z = f32::sin(cam_data.angle) * AMPLITUDE;
+
+            *cam_transform = Transform::from_xyz(x, 0.0, z).looking_at(Vec3::ZERO, Vec3::Y);
+        }
+    }
+}
+
+fn update_game_camera(
     time: Res<Time>,
     input_data: Res<InputData>,
     mut query: Query<(&mut GameCameraData, &mut Transform)>,
 ) {
-    // for (_, mut pbr) in query.iter_mut() {
-    //     let delta_y = (f32::cos(2.0 * time.seconds_since_startup() as f32) + 1.0) * 0.5;
-    //     pbr.translation.y = 0.5 + delta_y;
-    // }
-    for (mut cam_data, mut cam_transform) in query.iter_mut() {
-        const AMPLITUDE: f32 = 5.0;
-        const FREQ: f32 = 0.5;
-        // let x = f32::cos(FREQ * time.seconds_since_startup() as f32 + PI * 0.5) * AMPLITUDE;
-        // let z = f32::sin(FREQ * time.seconds_since_startup() as f32 + PI * 0.5) * AMPLITUDE;
-        let mut delta_angle = 0.0;
-        if input_data.left {
-            delta_angle = -FREQ * time.delta().as_secs_f32();
-        } else if input_data.right {
-            delta_angle = FREQ * time.delta().as_secs_f32();
-        }
-        cam_data.angle += delta_angle;
-        let x = f32::cos(cam_data.angle) * AMPLITUDE;
-        let z = f32::sin(cam_data.angle) * AMPLITUDE;
+    const ROT_SPEED: f32 = 180.0; // deg/s
+    if !input_data.use_map_input() {
+        for (mut cam_data, mut cam_transform) in query.iter_mut() {
+            let mut delta_yaw = 0.0;
+            if input_data.left {
+                delta_yaw = -ROT_SPEED * time.delta().as_secs_f32();
+            } else if input_data.right {
+                delta_yaw = ROT_SPEED * time.delta().as_secs_f32();
+            }
+            cam_data.yaw += delta_yaw;
+            let yaw_quat =
+                Quat::from_axis_angle(Vec3::new(0.0, 0.0, 1.0), cam_data.yaw.to_radians());
+            *cam_transform = Transform::from_rotation(yaw_quat);
+            // let x = f32::cos(cam_data.angle) * AMPLITUDE;
+            // let z = f32::sin(cam_data.angle) * AMPLITUDE;
 
-        *cam_transform = Transform::from_xyz(x, 0.0, z).looking_at(Vec3::ZERO, Vec3::Y);
+            // *cam_transform = Transform::from_xyz(x, 0.0, z).looking_at(Vec3::ZERO, Vec3::Y);
+        }
+    }
+}
+
+fn update_camera_debug(
+    cam_query: Query<&GameCameraData>,
+    mut text_query: Query<&mut Text, With<CameraDebugText>>,
+) {
+    for cam_data in cam_query.iter() {
+        for mut text in text_query.iter_mut() {
+            text.sections[0].value = format!(
+                "CameraPitch: {}\nCameraYaw: {}",
+                cam_data.pitch, cam_data.yaw
+            );
+            println!("yaw {}!", cam_data.yaw);
+        }
     }
 }
 
@@ -195,13 +289,16 @@ pub struct ScenePlugin;
 impl Plugin for ScenePlugin {
     fn build(&self, app: &mut AppBuilder) {
         app.add_startup_system(setup_scene.system())
-            .add_system(update_scene.system());
+            .add_system(update_map_camera.system())
+            .add_system(update_game_camera.system())
+            .add_system(update_camera_debug.system());
     }
 }
 
 struct InputData {
     left: bool,
     right: bool,
+    alt: bool,
 }
 
 impl InputData {
@@ -209,10 +306,14 @@ impl InputData {
         InputData {
             left: false,
             right: false,
+            alt: false,
         }
     }
     fn reset(self: &mut InputData) {
         *self = InputData::new();
+    }
+    fn use_map_input(self: &InputData) -> bool {
+        self.alt
     }
 }
 
@@ -231,6 +332,9 @@ fn input_system(
     }
     if keyboard_input.pressed(KeyCode::Right) {
         input_data.right = true;
+    }
+    if keyboard_input.pressed(KeyCode::LAlt) {
+        input_data.alt = true;
     }
 }
 
