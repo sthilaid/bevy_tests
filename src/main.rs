@@ -1,5 +1,6 @@
 use bevy::{
     app::AppExit,
+    diagnostic::{Diagnostics, FrameTimeDiagnosticsPlugin},
     input::{keyboard::KeyCode, Input},
     prelude::*,
 };
@@ -149,11 +150,11 @@ fn setup_scene(
         &mut materials,
         12345678, // seed: u64,
         3,        // branch_count: u32,
-        500,      // elem_count: u32,
-        0.1,      // init_radius: f32,
+        2000,     // elem_count: u32,
+        0.05,     // init_radius: f32,
         1.0,      // expansion_rate: f32,
         2.5,      // revolution_count: f32,
-        0.07,     // depth_std_dev: f32,
+        0.15,     // depth_std_dev: f32,
         0.05,     // lat_offset_std_dev: f32,
     );
 
@@ -188,6 +189,8 @@ struct InputData {
     right: bool,
     front: bool,
     back: bool,
+    up: bool,
+    down: bool,
     alt: bool,
 }
 
@@ -198,6 +201,8 @@ impl InputData {
             right: false,
             front: false,
             back: false,
+            up: false,
+            down: false,
             alt: false,
         }
     }
@@ -226,9 +231,15 @@ fn input_system(
         input_data.right = true;
     }
     if keyboard_input.pressed(KeyCode::Up) {
-        input_data.front = true;
+        input_data.up = true;
     }
     if keyboard_input.pressed(KeyCode::Down) {
+        input_data.down = true;
+    }
+    if keyboard_input.pressed(KeyCode::Z) {
+        input_data.front = true;
+    }
+    if keyboard_input.pressed(KeyCode::X) {
         input_data.back = true;
     }
     if keyboard_input.pressed(KeyCode::LAlt) {
@@ -239,6 +250,7 @@ fn input_system(
 struct GameCameraData {
     pitch: f32,
     yaw: f32,
+    thrust: f32,
 }
 
 impl GameCameraData {
@@ -246,6 +258,7 @@ impl GameCameraData {
         GameCameraData {
             pitch: 0.0,
             yaw: 0.0,
+            thrust: 0.0,
         }
     }
 }
@@ -301,43 +314,56 @@ fn update_game_camera(
     input_data: Res<InputData>,
     mut query: Query<(&mut GameCameraData, &mut Transform)>,
 ) {
-    const MOVE_SPEED: f32 = 1.0;
-    const ROT_SPEED: f32 = 120.0; // deg/s
+    const ACCEL: f32 = 0.5;
+    const YAW_ROT_SPEED: f32 = 110.0; // deg/s
+    const PITCH_ROT_SPEED: f32 = 60.0; // deg/s
+    let dt: f32 = time.delta().as_secs_f32();
+
     if !input_data.use_map_input() {
         for (mut cam_data, mut cam_transform) in query.iter_mut() {
             // update rotation
-            let mut delta_yaw = 0.0;
+            let (mut delta_yaw, mut delta_pitch) = (0.0, 0.0);
             if input_data.left {
-                delta_yaw = -ROT_SPEED * time.delta().as_secs_f32();
+                delta_yaw = YAW_ROT_SPEED * dt;
             } else if input_data.right {
-                delta_yaw = ROT_SPEED * time.delta().as_secs_f32();
+                delta_yaw = -YAW_ROT_SPEED * dt;
+            }
+            if input_data.up {
+                delta_pitch = PITCH_ROT_SPEED * dt;
+            } else if input_data.down {
+                delta_pitch = -PITCH_ROT_SPEED * dt;
             }
             cam_data.yaw = normalize_angle(cam_data.yaw + delta_yaw);
+            cam_data.pitch = normalize_angle(cam_data.pitch + delta_pitch);
 
             let yaw_quat =
                 Quat::from_axis_angle(Vec3::new(0.0, 1.0, 0.0), cam_data.yaw.to_radians());
-            let cam_quat = yaw_quat;
+            let pitch_quat =
+                Quat::from_axis_angle(Vec3::new(1.0, 0.0, 0.0), cam_data.pitch.to_radians());
+            let cam_quat = yaw_quat * pitch_quat;
 
             // update position
-            let mut delta_forward = 0.0;
+            let mut delta_accel = 0.0;
             if input_data.front {
-                delta_forward = MOVE_SPEED * time.delta().as_secs_f32();
+                delta_accel = ACCEL * dt;
             } else if input_data.back {
-                delta_forward = -MOVE_SPEED * time.delta().as_secs_f32();
+                delta_accel = -ACCEL * dt;
             }
+            cam_data.thrust += delta_accel;
 
+            let effective_accel = if cam_data.thrust.abs() < 0.01 {
+                0.0
+            } else {
+                cam_data.thrust
+            };
             let forward = cam_quat.mul_vec3(Vec3::new(0.0, 0.0, -1.0));
-            let delta = forward * delta_forward;
+            let delta = forward * effective_accel * dt;
             let cam_pos = cam_transform.translation + delta;
             *cam_transform = Transform {
                 translation: cam_pos,
                 rotation: cam_quat,
                 ..Default::default()
             };
-            // let x = f32::cos(cam_data.angle) * AMPLITUDE;
-            // let z = f32::sin(cam_data.angle) * AMPLITUDE;
-
-            // *cam_transform = Transform::from_xyz(x, 0.0, z).looking_at(Vec3::ZERO, Vec3::Y);
         }
     }
 }
@@ -391,13 +417,20 @@ fn setup_ui(mut commands: Commands, asset_server: Res<AssetServer>) {
 
 fn update_camera_debug(
     cam_query: Query<&GameCameraData>,
+    diagnostics: Res<Diagnostics>,
     mut text_query: Query<&mut Text, With<CameraDebugText>>,
 ) {
+    let mut fps = 0.0;
+    if let Some(fps_diagnostic) = diagnostics.get(FrameTimeDiagnosticsPlugin::FPS) {
+        if let Some(fps_avg) = fps_diagnostic.average() {
+            fps = fps_avg;
+        }
+    }
     for cam_data in cam_query.iter() {
         for mut text in text_query.iter_mut() {
             text.sections[0].value = format!(
-                "CameraPitch: {}\nCameraYaw: {}",
-                cam_data.pitch, cam_data.yaw
+                "CameraPitch: {}\nCameraYaw: {}\nThrust: {}\nFPS: {}",
+                cam_data.pitch, cam_data.yaw, cam_data.thrust, fps
             );
         }
     }
@@ -414,6 +447,7 @@ fn main() {
     App::build()
         .insert_resource(ClearColor(Color::rgb(0.0, 0.0, 0.0)))
         .add_plugins(DefaultPlugins)
+        .add_plugin(FrameTimeDiagnosticsPlugin)
         .add_plugin(HelloPlugin)
         .add_plugin(ScenePlugin)
         .add_plugin(GamePlugin)
