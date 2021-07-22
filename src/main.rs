@@ -57,6 +57,7 @@ impl Plugin for HelloPlugin {
 
 pub struct ScenePlugin;
 struct Star;
+struct Cockpit;
 
 fn spawn_star(
     commands: &mut Commands,
@@ -132,7 +133,7 @@ fn spawn_galaxy(
                 &mut meshes,
                 &mut materials,
                 &final_pos,
-                0.01,
+                10.0,
                 branch_color,
             );
         }
@@ -141,6 +142,7 @@ fn spawn_galaxy(
 
 fn setup_scene(
     mut commands: Commands,
+    asset_server: Res<AssetServer>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
@@ -151,12 +153,27 @@ fn setup_scene(
         12345678, // seed: u64,
         3,        // branch_count: u32,
         2000,     // elem_count: u32,
-        0.05,     // init_radius: f32,
-        1.0,      // expansion_rate: f32,
+        50.0,     // init_radius: f32,
+        1000.0,   // expansion_rate: f32,
         2.5,      // revolution_count: f32,
-        0.15,     // depth_std_dev: f32,
-        0.05,     // lat_offset_std_dev: f32,
+        150.0,    // depth_std_dev: f32,
+        50.0,     // lat_offset_std_dev: f32,
     );
+
+    let cockpit_handle: Handle<Mesh> = asset_server.load("meshes/cockpit.gltf#Mesh0/Primitive0");
+
+    commands
+        .spawn_bundle(PbrBundle {
+            mesh: cockpit_handle,
+            material: materials.add(StandardMaterial {
+                base_color: Color::GRAY,
+                //unlit: true,
+                ..Default::default()
+            }),
+            transform: Transform::from_xyz(0.0, 0.0, 0.0),
+            ..Default::default()
+        })
+        .insert(Cockpit);
 
     // todo: need to make a render pass using GalaxyMap to render the map view
     let mut map_camera = OrthographicCameraBundle::with_name("GalaxyMap");
@@ -167,6 +184,8 @@ fn setup_scene(
 
     let mut game_camera = PerspectiveCameraBundle::new_3d();
     game_camera.perspective_projection.near = 0.001;
+    game_camera.perspective_projection.far = 1000000.0;
+    game_camera.perspective_projection.fov = 50.0_f32.to_radians();
     commands
         .spawn_bundle(game_camera)
         .insert(GameCameraData::new());
@@ -312,15 +331,18 @@ fn update_map_camera(
 fn update_game_camera(
     time: Res<Time>,
     input_data: Res<InputData>,
-    mut query: Query<(&mut GameCameraData, &mut Transform)>,
+    mut set: QuerySet<(
+        Query<(&mut GameCameraData, &mut Transform)>,
+        Query<&mut Transform, With<Cockpit>>,
+    )>,
 ) {
-    const ACCEL: f32 = 0.5;
+    const ACCEL: f32 = 0.1;
     const YAW_ROT_SPEED: f32 = 110.0; // deg/s
     const PITCH_ROT_SPEED: f32 = 60.0; // deg/s
     let dt: f32 = time.delta().as_secs_f32();
-
+    let mut new_transform = Transform::identity();
     if !input_data.use_map_input() {
-        for (mut cam_data, mut cam_transform) in query.iter_mut() {
+        for (mut cam_data, mut cam_transform) in set.q0_mut().iter_mut() {
             // update rotation
             let (mut delta_yaw, mut delta_pitch) = (0.0, 0.0);
             if input_data.left {
@@ -344,10 +366,11 @@ fn update_game_camera(
 
             // update position
             let mut delta_accel = 0.0;
+            let current_accel = (cam_data.thrust * ACCEL).max(0.5);
             if input_data.front {
-                delta_accel = ACCEL * dt;
+                delta_accel = current_accel * dt;
             } else if input_data.back {
-                delta_accel = -ACCEL * dt;
+                delta_accel = -current_accel * dt;
             }
             cam_data.thrust += delta_accel;
 
@@ -364,6 +387,11 @@ fn update_game_camera(
                 rotation: cam_quat,
                 ..Default::default()
             };
+            new_transform = *cam_transform;
+        }
+
+        for mut cockpit_transform in set.q1_mut().iter_mut() {
+            *cockpit_transform = new_transform;
         }
     }
 }
@@ -416,7 +444,7 @@ fn setup_ui(mut commands: Commands, asset_server: Res<AssetServer>) {
 }
 
 fn update_camera_debug(
-    cam_query: Query<&GameCameraData>,
+    cam_query: Query<(&GameCameraData, &Transform)>,
     diagnostics: Res<Diagnostics>,
     mut text_query: Query<&mut Text, With<CameraDebugText>>,
 ) {
@@ -426,11 +454,11 @@ fn update_camera_debug(
             fps = fps_avg;
         }
     }
-    for cam_data in cam_query.iter() {
+    for (cam_data, transform) in cam_query.iter() {
         for mut text in text_query.iter_mut() {
             text.sections[0].value = format!(
-                "CameraPitch: {}\nCameraYaw: {}\nThrust: {}\nFPS: {}",
-                cam_data.pitch, cam_data.yaw, cam_data.thrust, fps
+                "CamPos: {}\nCameraPitch: {}\nCameraYaw: {}\nThrust: {}\nFPS: {}",
+                transform.translation, cam_data.pitch, cam_data.yaw, cam_data.thrust, fps
             );
         }
     }
@@ -448,7 +476,7 @@ fn main() {
         .insert_resource(ClearColor(Color::rgb(0.0, 0.0, 0.0)))
         .add_plugins(DefaultPlugins)
         .add_plugin(FrameTimeDiagnosticsPlugin)
-        .add_plugin(HelloPlugin)
+        //.add_plugin(HelloPlugin)
         .add_plugin(ScenePlugin)
         .add_plugin(GamePlugin)
         .add_plugin(GameUiPlugin)
