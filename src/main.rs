@@ -173,7 +173,8 @@ fn setup_scene(
             transform: Transform::from_xyz(0.0, 0.0, 0.0),
             ..Default::default()
         })
-        .insert(Cockpit);
+        .insert(Cockpit)
+        .insert(PlayerAttachedObject);
 
     // todo: need to make a render pass using GalaxyMap to render the map view
     let mut map_camera = OrthographicCameraBundle::with_name("GalaxyMap");
@@ -186,9 +187,7 @@ fn setup_scene(
     game_camera.perspective_projection.near = 0.001;
     game_camera.perspective_projection.far = 1000000.0;
     game_camera.perspective_projection.fov = 50.0_f32.to_radians();
-    commands
-        .spawn_bundle(game_camera)
-        .insert(GameCameraData::new());
+    commands.spawn_bundle(game_camera).insert(PlayerCamera);
 }
 
 impl Plugin for ScenePlugin {
@@ -229,7 +228,8 @@ impl InputData {
         *self = InputData::new();
     }
     fn use_map_input(self: &InputData) -> bool {
-        self.alt
+        //self.alt
+        false
     }
 }
 
@@ -266,10 +266,14 @@ fn input_system(
     }
 }
 
+struct PlayerCamera;
+struct PlayerAttachedObject;
+
 struct GameCameraData {
     pitch: f32,
     yaw: f32,
     thrust: f32,
+    transform: Transform,
 }
 
 impl GameCameraData {
@@ -278,6 +282,7 @@ impl GameCameraData {
             pitch: 0.0,
             yaw: 0.0,
             thrust: 0.0,
+            transform: Transform::identity(),
         }
     }
 }
@@ -289,16 +294,6 @@ struct GalaxyMapCameraData {
 impl GalaxyMapCameraData {
     fn new() -> GalaxyMapCameraData {
         GalaxyMapCameraData { angle: FRAC_PI_2 }
-    }
-}
-
-fn normalize_angle(angle: f32) -> f32 {
-    if angle > 180.0 {
-        angle - 360.0
-    } else if angle < -180.0 {
-        angle + 360.0
-    } else {
-        angle
     }
 }
 
@@ -331,38 +326,44 @@ fn update_map_camera(
 fn update_game_camera(
     time: Res<Time>,
     input_data: Res<InputData>,
-    mut set: QuerySet<(
-        Query<(&mut GameCameraData, &mut Transform)>,
-        Query<&mut Transform, With<Cockpit>>,
-    )>,
+    mut cam_data: ResMut<GameCameraData>,
+    mut cam_query: Query<&mut Transform, With<PlayerCamera>>,
 ) {
-    const ACCEL: f32 = 0.1;
+    const ACCEL: f32 = 0.75;
     const YAW_ROT_SPEED: f32 = 110.0; // deg/s
     const PITCH_ROT_SPEED: f32 = 60.0; // deg/s
+    const ROLL_ROT_SPEED: f32 = 60.0; // deg/s
     let dt: f32 = time.delta().as_secs_f32();
-    let mut new_transform = Transform::identity();
+
     if !input_data.use_map_input() {
-        for (mut cam_data, mut cam_transform) in set.q0_mut().iter_mut() {
+        for mut cam_transform in cam_query.iter_mut() {
             // update rotation
-            let (mut delta_yaw, mut delta_pitch) = (0.0, 0.0);
-            if input_data.left {
-                delta_yaw = YAW_ROT_SPEED * dt;
-            } else if input_data.right {
-                delta_yaw = -YAW_ROT_SPEED * dt;
+            let (mut delta_yaw, mut delta_pitch, mut delta_roll) = (0.0, 0.0, 0.0);
+            if !input_data.alt {
+                if input_data.left {
+                    delta_roll = ROLL_ROT_SPEED * dt;
+                } else if input_data.right {
+                    delta_roll = -ROLL_ROT_SPEED * dt;
+                }
+            } else {
+                if input_data.left {
+                    delta_yaw = YAW_ROT_SPEED * dt;
+                } else if input_data.right {
+                    delta_yaw = -YAW_ROT_SPEED * dt;
+                }
             }
             if input_data.up {
                 delta_pitch = PITCH_ROT_SPEED * dt;
             } else if input_data.down {
                 delta_pitch = -PITCH_ROT_SPEED * dt;
             }
-            cam_data.yaw = normalize_angle(cam_data.yaw + delta_yaw);
-            cam_data.pitch = normalize_angle(cam_data.pitch + delta_pitch);
 
-            let yaw_quat =
-                Quat::from_axis_angle(Vec3::new(0.0, 1.0, 0.0), cam_data.yaw.to_radians());
+            let yaw_quat = Quat::from_axis_angle(Vec3::new(0.0, 1.0, 0.0), delta_yaw.to_radians());
             let pitch_quat =
-                Quat::from_axis_angle(Vec3::new(1.0, 0.0, 0.0), cam_data.pitch.to_radians());
-            let cam_quat = yaw_quat * pitch_quat;
+                Quat::from_axis_angle(Vec3::new(1.0, 0.0, 0.0), delta_pitch.to_radians());
+            let roll_quat =
+                Quat::from_axis_angle(Vec3::new(0.0, 0.0, 1.0), delta_roll.to_radians());
+            let cam_quat = cam_data.transform.rotation * pitch_quat * yaw_quat * roll_quat;
 
             // update position
             let mut delta_accel = 0.0;
@@ -387,21 +388,33 @@ fn update_game_camera(
                 rotation: cam_quat,
                 ..Default::default()
             };
-            new_transform = *cam_transform;
+            cam_data.transform = *cam_transform;
         }
+    }
+}
 
-        for mut cockpit_transform in set.q1_mut().iter_mut() {
-            *cockpit_transform = new_transform;
-        }
+fn update_player_objects(
+    cam_data: Res<GameCameraData>,
+    mut obj_query: Query<&mut Transform, With<PlayerAttachedObject>>,
+) {
+    for mut obj_transform in obj_query.iter_mut() {
+        *obj_transform = cam_data.transform;
     }
 }
 
 impl Plugin for GamePlugin {
     fn build(&self, app: &mut AppBuilder) {
         app.insert_resource(InputData::new())
-            .add_system(input_system.system())
-            .add_system(update_map_camera.system())
-            .add_system(update_game_camera.system());
+            .insert_resource(GameCameraData::new())
+            .add_system(input_system.system().label("input"))
+            .add_system(update_map_camera.system().after("input"))
+            .add_system(
+                update_game_camera
+                    .system()
+                    .label("camupdate")
+                    .after("input"),
+            )
+            .add_system(update_player_objects.system().after("camupdate"));
     }
 }
 
@@ -444,7 +457,7 @@ fn setup_ui(mut commands: Commands, asset_server: Res<AssetServer>) {
 }
 
 fn update_camera_debug(
-    cam_query: Query<(&GameCameraData, &Transform)>,
+    cam_data: Res<GameCameraData>,
     diagnostics: Res<Diagnostics>,
     mut text_query: Query<&mut Text, With<CameraDebugText>>,
 ) {
@@ -454,13 +467,11 @@ fn update_camera_debug(
             fps = fps_avg;
         }
     }
-    for (cam_data, transform) in cam_query.iter() {
-        for mut text in text_query.iter_mut() {
-            text.sections[0].value = format!(
-                "CamPos: {}\nCameraPitch: {}\nCameraYaw: {}\nThrust: {}\nFPS: {}",
-                transform.translation, cam_data.pitch, cam_data.yaw, cam_data.thrust, fps
-            );
-        }
+    for mut text in text_query.iter_mut() {
+        text.sections[0].value = format!(
+            "CamPos: {}\nCameraPitch: {}\nCameraYaw: {}\nThrust: {}\nFPS: {}",
+            cam_data.transform.translation, cam_data.pitch, cam_data.yaw, cam_data.thrust, fps
+        );
     }
 }
 
